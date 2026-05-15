@@ -1130,7 +1130,7 @@
         // ============================================================================
         // CONFIGURAÇÃO MASTER
         // ============================================================================
-        const SYSTEM_VERSION = '4.3';
+        const SYSTEM_VERSION = '3.0.0';
         const SYSTEM_NAME = 'FootSystem By Pedro Mustafe';
         const MASTER_USER = 'pedromustafe';
         const MASTER_PASS = 'SSES19F17!';
@@ -1147,20 +1147,913 @@
             producao: 'fs_producao',
             estoque: 'fs_estoque',
             materiais: 'fs_materiais',
+            materiaisBota: 'fs_materiais_bota',
             bancas: 'fs_bancas',
             financeiro: 'fs_financeiro',
+            historico: 'fs_historico',
+            configuracoes: 'fs_configuracoes',
+            modelos: 'fs_modelos',
+            backupHistorico: 'fs_backupHistorico',
             systemLog: 'fs_system_log',
             tempCodes: 'fs_temp_codes',
         };
 
-        function getStorage(key) { try { const d = localStorage.getItem(key); return d ? JSON.parse(d) : []; } catch (e) { return []; } }
+        function getStorage(key) { try { const d = localStorage.getItem(key); return d ? JSON.parse(d) : []; } catch (
+                e) { return []; } }
 
-        function setStorage(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (e) { showToast('Erro: armazenamento cheio!', 'error'); return false; } }
+        function setStorage(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (
+                e) { showToast('Erro: armazenamento cheio!', 'error'); return false; } }
 
-        // Rest of the original code from the user's file
-        // (The full original script is included here in the actual update)
+        // ============================================================================
+        // DADOS INICIAIS
+        // ============================================================================
+        function initMasterData() {
+            // Garantir que o usuário MASTER existe SEMPRE
+            let usuarios = getStorage(STORAGE_KEYS.usuarios);
+            const masterExists = usuarios.find(u => u.id === MASTER_ID);
+            if (!masterExists) {
+                usuarios = usuarios.filter(u => u.user !== MASTER_USER); // remove qualquer duplicata
+                usuarios.push({
+                    id: MASTER_ID,
+                    user: MASTER_USER,
+                    pass: MASTER_PASS,
+                    name: 'Pedro Mustafe',
+                    plan: 'master',
+                    role: 'master_admin',
+                    lojaId: null, // master vê todas
+                    active: true,
+                    locked: false,
+                    criadoEm: new Date().toISOString(),
+                });
+                setStorage(STORAGE_KEYS.usuarios, usuarios);
+            }
+            // Garantir loja padrão
+            let lojas = getStorage(STORAGE_KEYS.lojas);
+            if (!lojas.length) {
+                lojas.push({
+                    id: 'loja_default',
+                    nome: 'Fábrica Principal',
+                    responsavel: 'Administrador',
+                    telefone: '(00) 00000-0000',
+                    email: 'admin@footsystem.com',
+                    plano: 'black',
+                    status: 'ativo',
+                    validade: '2099-12-31',
+                    criadoEm: new Date().toISOString(),
+                });
+                setStorage(STORAGE_KEYS.lojas, lojas);
+            }
+            // Inicializar outras chaves
+            for (let k in STORAGE_KEYS) {
+                if (!localStorage.getItem(STORAGE_KEYS[k])) localStorage.setItem(STORAGE_KEYS[k], '[]');
+            }
+            if (!getStorage(STORAGE_KEYS.modelos).length) {
+                setStorage(STORAGE_KEYS.modelos, [
+                    { id: 'm1', nome: 'Botina Country', referencia: 'BC-001', categoria: 'Botinha',
+                    criadoEm: new Date().toISOString() },
+                    { id: 'm2', nome: 'Texana Premium', referencia: 'TX-002', categoria: 'Texana',
+                        criadoEm: new Date().toISOString() },
+                ]);
+            }
+        }
 
-        console.log(`🏭 ${SYSTEM_NAME} v${SYSTEM_VERSION} - Supabase Ready`);
+        // ============================================================================
+        // SISTEMA DE CÓDIGOS TEMPORÁRIOS
+        // ============================================================================
+        function generateTempCode(lojaId, duracaoMinutos) {
+            const codes = getStorage(STORAGE_KEYS.tempCodes);
+            const code = 'TMP-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).substr(2, 6)
+                .toUpperCase();
+            const expiraEm = new Date(Date.now() + duracaoMinutos * 60000).toISOString();
+            codes.push({
+                id: generateId(),
+                code,
+                lojaId,
+                duracaoMinutos,
+                expiraEm,
+                usado: false,
+                criadoEm: new Date().toISOString(),
+                criadoPor: getCurrentUser()?.user || 'sistema',
+            });
+            // Limpar códigos expirados
+            const now = new Date().toISOString();
+            const validCodes = codes.filter(c => c.expiraEm > now && !c.usado);
+            setStorage(STORAGE_KEYS.tempCodes, validCodes.length === codes.length ? codes : validCodes);
+            addSystemLog('temp_code', `Código temporário gerado: ${code} (${duracaoMinutos}min) para loja ${lojaId}`);
+            return code;
+        }
+
+        function validateTempCode() {
+            const inputCode = document.getElementById('tempCodeInput').value.trim();
+            if (!inputCode) { showToast('Digite o código!', 'error'); return; }
+            const codes = getStorage(STORAGE_KEYS.tempCodes);
+            const now = new Date().toISOString();
+            const found = codes.find(c => c.code === inputCode && c.expiraEm > now && !c.usado);
+            if (!found) {
+                showToast('❌ Código inválido ou expirado!', 'error');
+                addSystemLog('temp_code_fail', `Tentativa de código inválido: ${inputCode}`);
+                return;
+            }
+            found.usado = true;
+            setStorage(STORAGE_KEYS.tempCodes, codes);
+            // Desbloquear temporariamente a loja
+            const lojas = getStorage(STORAGE_KEYS.lojas);
+            const loja = lojas.find(l => l.id === found.lojaId);
+            if (loja) {
+                loja.status = 'ativo';
+                loja.tempUnblockExpires = found.expiraEm;
+                setStorage(STORAGE_KEYS.lojas, lojas);
+            }
+            document.getElementById('blockedOverlay').style.display = 'none';
+            showToast('✅ Acesso liberado temporariamente!', 'success');
+            addSystemLog('temp_code_used', `Código ${inputCode} usado com sucesso para loja ${found.lojaId}`);
+            // Reaplicar bloqueio após expirar
+            const tempoRestante = new Date(found.expiraEm).getTime() - Date.now();
+            if (tempoRestante > 0) {
+                setTimeout(() => {
+                    if (loja) {
+                        loja.status = 'bloqueado';
+                        loja.tempUnblockExpires = null;
+                        setStorage(STORAGE_KEYS.lojas, getStorage(STORAGE_KEYS.lojas));
+                        addSystemLog('temp_code_expired', `Código ${inputCode} expirou, loja ${loja.nome} bloqueada novamente`);
+                    }
+                    if (getCurrentUser() && getCurrentUser().lojaId === found.lojaId) {
+                        checkBlockedStatus();
+                    }
+                }, tempoRestante);
+            }
+        }
+
+        // ============================================================================
+        // BLOQUEIO DE LOJA
+        // ============================================================================
+        function checkBlockedStatus() {
+            const user = getCurrentUser();
+            if (!user || user.role === 'master_admin') return false;
+            if (user.lojaId) {
+                const lojas = getStorage(STORAGE_KEYS.lojas);
+                const loja = lojas.find(l => l.id === user.lojaId);
+                if (loja && (loja.status === 'bloqueado' || loja.status === 'suspenso')) {
+                    document.getElementById('blockedOverlay').style.display = 'flex';
+                    document.getElementById('blockedMessage').textContent =
+                        `A loja "${loja.nome}" está ${loja.status}. Entre em contato com o administrador ou use um código de liberação.`;
+                    return true;
+                }
+                // Verificar validade
+                if (loja && loja.validade && new Date(loja.validade) < new Date()) {
+                    loja.status = 'bloqueado';
+                    setStorage(STORAGE_KEYS.lojas, getStorage(STORAGE_KEYS.lojas));
+                    document.getElementById('blockedOverlay').style.display = 'flex';
+                    document.getElementById('blockedMessage').textContent =
+                        `O plano da loja "${loja.nome}" expirou. Renove para continuar.`;
+                    return true;
+                }
+            }
+            document.getElementById('blockedOverlay').style.display = 'none';
+            return false;
+        }
+
+        // ============================================================================
+        // USUÁRIOS E SESSÃO
+        // ============================================================================
+        function getUsuarios() { return getStorage(STORAGE_KEYS.usuarios); }
+
+        function getCurrentUser() {
+            const sessao = getStorage(STORAGE_KEYS.sessoes);
+            if (sessao && sessao.userId) {
+                const usuarios = getUsuarios();
+                return usuarios.find(u => u.id === sessao.userId && u.active && !u.locked) || null;
+            }
+            return null;
+        }
+
+        function isMaster() {
+            const user = getCurrentUser();
+            return user && user.id === MASTER_ID && user.role === 'master_admin';
+        }
+
+        function doLogin() {
+            const userInput = document.getElementById('loginUser').value.trim();
+            const passInput = document.getElementById('loginPass').value.trim();
+            const errorEl = document.getElementById('loginError');
+            if (!userInput || !passInput) { errorEl.style.display = 'block';
+                errorEl.textContent = 'Preencha todos os campos!'; return; }
+            const usuarios = getUsuarios();
+            const found = usuarios.find(u => u.user === userInput && u.pass === passInput && u.active && !u.locked);
+            if (!found) {
+                errorEl.style.display = 'block';
+                errorEl.textContent = 'Credenciais inválidas ou conta bloqueada!';
+                addSystemLog('login_fail', `Tentativa de login falhou para: ${userInput}`);
+                return;
+            }
+            setStorage(STORAGE_KEYS.sessoes, { userId: found.id, loginTime: new Date().toISOString() });
+            document.getElementById('loginOverlay').style.display = 'none';
+            document.getElementById('landingPage').style.display = 'none';
+            document.getElementById('appContainer').style.display = 'flex';
+            updateUI(found);
+            addSystemLog('login', `Login: ${found.name} (${found.plan})`);
+            if (!isMaster() && checkBlockedStatus()) return;
+            buildSidebar();
+            navigateTo('dashboard');
+        }
+
+        function logout() {
+            const user = getCurrentUser();
+            if (user) addSystemLog('logout', `Logout: ${user.name}`);
+            setStorage(STORAGE_KEYS.sessoes, null);
+            document.getElementById('appContainer').style.display = 'none';
+            document.getElementById('loginOverlay').style.display = 'none';
+            document.getElementById('landingPage').style.display = 'flex';
+            document.getElementById('blockedOverlay').style.display = 'none';
+        }
+
+        function updateUI(user) {
+            document.getElementById('userAvatar').textContent = user.name.charAt(0).toUpperCase();
+            document.getElementById('userNameDisplay').textContent = user.name;
+            const badge = document.getElementById('userPlanBadge');
+            badge.textContent = user.plan === 'master' ? 'MASTER' : user.plan.toUpperCase();
+            badge.className = 'plan-badge ' + (user.plan === 'master' ? 'master' : user.plan);
+        }
+
+        function buildSidebar() {
+            const user = getCurrentUser();
+            const nav = document.getElementById('sidebarNav');
+            let html = '';
+            if (isMaster()) {
+                html += '<div class="nav-section">Painel MASTER</div>';
+                html +=
+                    '<a class="nav-item" data-page="master_dashboard" onclick="navigateTo(\'master_dashboard\')">📊 Dashboard Master</a>';
+                html += '<a class="nav-item" data-page="lojas" onclick="navigateTo(\'lojas\')">🏢 Gerenciar Lojas</a>';
+                html += '<a class="nav-item" data-page="usuarios" onclick="navigateTo(\'usuarios\')">👥 Usuários</a>';
+                html += '<a class="nav-item" data-page="temp_codes" onclick="navigateTo(\'temp_codes\')">🔑 Códigos Temp.</a>';
+                html +=
+                    '<a class="nav-item" data-page="log" onclick="navigateTo(\'log\')">📝 Logs Avançados</a>';
+                html += '<div class="nav-section">Produção</div>';
+            }
+            html += '<a class="nav-item" data-page="dashboard" onclick="navigateTo(\'dashboard\')">📊 Dashboard</a>';
+            html += '<a class="nav-item" data-page="producao" onclick="navigateTo(\'producao\')">🏭 Produção</a>';
+            html += '<a class="nav-item" data-page="fichas" onclick="navigateTo(\'fichas\')">📋 Fichas Técnicas</a>';
+            html += '<a class="nav-item" data-page="bancas" onclick="navigateTo(\'bancas\')">👥 Bancas</a>';
+            html += '<a class="nav-item" data-page="estoque" onclick="navigateTo(\'estoque\')">📦 Estoque</a>';
+            html += '<a class="nav-item" data-page="materiais" onclick="navigateTo(\'materiais\')">🧵 Materiais</a>';
+            html += '<a class="nav-item" data-page="financeiro" onclick="navigateTo(\'financeiro\')">💰 Financeiro</a>';
+            html += '<a class="nav-item" data-page="relatorios" onclick="navigateTo(\'relatorios\')">📈 Relatórios</a>';
+            html += '<div class="nav-section">Sistema</div>';
+            html +=
+                '<a class="nav-item" data-page="configuracoes" onclick="navigateTo(\'configuracoes\')">⚙️ Configurações</a>';
+            nav.innerHTML = html;
+        }
+
+        // ============================================================================
+        // NAVIGATION
+        // ============================================================================
+        let currentPage = 'dashboard';
+
+        function navigateTo(page) {
+            currentPage = page;
+            document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+            const ni = document.querySelector(`[data-page="${page}"]`);
+            if (ni) ni.classList.add('active');
+            const titles = {
+                dashboard: 'Dashboard',
+                master_dashboard: 'Painel MASTER',
+                producao: 'Controle de Produção',
+                fichas: 'Fichas Técnicas',
+                bancas: 'Bancas',
+                estoque: 'Estoque',
+                materiais: 'Materiais',
+                financeiro: 'Financeiro',
+                relatorios: 'Relatórios',
+                lojas: 'Gerenciar Lojas',
+                usuarios: 'Usuários',
+                temp_codes: 'Códigos Temporários',
+                log: 'Logs do Sistema',
+                configuracoes: 'Configurações'
+            };
+            document.getElementById('pageTitle').textContent = titles[page] || page;
+            document.getElementById('pageBreadcrumb').textContent = page.replace(/_/g, ' ');
+            renderPage(page);
+        }
+
+        function renderPage(page) {
+            const content = document.getElementById('pageContent');
+            const headerActions = document.getElementById('headerActions');
+            headerActions.innerHTML = '';
+            const user = getCurrentUser();
+            const lojaId = user?.lojaId || null;
+
+            switch (page) {
+                case 'dashboard':
+                    renderDashboard(content, headerActions, lojaId);
+                    break;
+                case 'master_dashboard':
+                    if (!isMaster()) { content.innerHTML = '<p style="text-align:center;padding:60px;">🔒 Acesso restrito ao MASTER</p>'; return; }
+                    renderMasterDashboard(content, headerActions);
+                    break;
+                case 'producao':
+                    renderProducao(content, headerActions, lojaId);
+                    break;
+                case 'fichas':
+                    renderFichas(content, headerActions, lojaId);
+                    break;
+                case 'bancas':
+                    renderBancas(content, headerActions, lojaId);
+                    break;
+                case 'estoque':
+                    renderEstoque(content, headerActions, lojaId);
+                    break;
+                case 'materiais':
+                    renderMateriais(content, headerActions, lojaId);
+                    break;
+                case 'financeiro':
+                    renderFinanceiro(content, headerActions, lojaId);
+                    break;
+                case 'relatorios':
+                    renderRelatorios(content, headerActions, lojaId);
+                    break;
+                case 'lojas':
+                    if (!isMaster()) { content.innerHTML = '<p style="text-align:center;padding:60px;">🔒 Acesso restrito</p>'; return; }
+                    renderLojas(content, headerActions);
+                    break;
+                case 'usuarios':
+                    if (!isMaster()) { content.innerHTML = '<p style="text-align:center;padding:60px;">🔒 Acesso restrito</p>'; return; }
+                    renderUsuarios(content, headerActions);
+                    break;
+                case 'temp_codes':
+                    if (!isMaster()) { content.innerHTML = '<p style="text-align:center;padding:60px;">🔒 Acesso restrito</p>'; return; }
+                    renderTempCodes(content, headerActions);
+                    break;
+                case 'log':
+                    if (!isMaster()) { content.innerHTML = '<p style="text-align:center;padding:60px;">🔒 Acesso restrito</p>'; return; }
+                    renderLog(content, headerActions);
+                    break;
+                case 'configuracoes':
+                    renderConfiguracoes(content, headerActions);
+                    break;
+                default:
+                    content.innerHTML = '<p>Página não encontrada.</p>';
+            }
+        }
+
+        // ============================================================================
+        // FILTRO POR LOJA
+        // ============================================================================
+        function filterByLoja(data, lojaId) {
+            if (!lojaId) return data;
+            return data.filter(item => item.lojaId === lojaId || !item.lojaId);
+        }
+
+        function getLojaFilter() {
+            const user = getCurrentUser();
+            if (isMaster()) return null;
+            return user?.lojaId || null;
+        }
+
+        // ============================================================================
+        // DASHBOARD
+        // ============================================================================
+        function renderDashboard(content, headerActions, lojaId) {
+            headerActions.innerHTML = '<button class="btn btn-gold btn-sm" onclick="triggerBackup()">💾 Backup</button>';
+            const prod = filterByLoja(getStorage(STORAGE_KEYS.producao), lojaId);
+            const fin = filterByLoja(getStorage(STORAGE_KEYS.financeiro), lojaId);
+            const total = prod.filter(p => ['finalizado', 'entregue'].includes(p.status)).reduce((s, p) => s + (p.quantidade || 0), 0);
+            const emAnd = prod.filter(p => !['finalizado', 'entregue'].includes(p.status)).length;
+            const rec = fin.filter(f => f.tipo === 'receita').reduce((s, f) => s + (f.valor || 0), 0);
+            content.innerHTML = `
+            <div class="stats-grid">
+              <div class="stat-card gold"><div class="stat-label">Produção Total</div><div class="stat-value">${total} pares</div></div>
+              <div class="stat-card blue"><div class="stat-label">Em Andamento</div><div class="stat-value">${emAnd}</div></div>
+              <div class="stat-card green"><div class="stat-label">Receita</div><div class="stat-value">${formatCurrency(rec)}</div></div>
+            </div>
+            <div style="text-align:center;padding:40px;color:var(--text-muted);">
+              <h2 style="color:var(--gold);">FootSystem By Pedro Mustafe</h2>
+              <p>ERP Industrial v${SYSTEM_VERSION}</p>
+            </div>`;
+        }
+
+        // ============================================================================
+        // MASTER DASHBOARD
+        // ============================================================================
+        function renderMasterDashboard(content, headerActions) {
+            const lojas = getStorage(STORAGE_KEYS.lojas);
+            const usuarios = getUsuarios();
+            const ativas = lojas.filter(l => l.status === 'ativo').length;
+            const bloqueadas = lojas.filter(l => l.status === 'bloqueado').length;
+            const totalUsers = usuarios.filter(u => u.id !== MASTER_ID).length;
+            content.innerHTML = `
+            <div class="stats-grid">
+              <div class="stat-card gold"><div class="stat-label">Total Lojas</div><div class="stat-value">${lojas.length}</div></div>
+              <div class="stat-card green"><div class="stat-label">Lojas Ativas</div><div class="stat-value">${ativas}</div></div>
+              <div class="stat-card red"><div class="stat-label">Lojas Bloqueadas</div><div class="stat-value">${bloqueadas}</div></div>
+              <div class="stat-card blue"><div class="stat-label">Usuários</div><div class="stat-value">${totalUsers}</div></div>
+            </div>
+            <div class="table-container">
+              <div class="table-header"><h3>🏢 Lojas Recentes</h3></div>
+              <table><thead><tr><th>Loja</th><th>Responsável</th><th>Plano</th><th>Status</th><th>Validade</th></tr></thead>
+              <tbody>${lojas.map(l=>`<tr><td><strong>${l.nome}</strong></td><td>${l.responsavel||'-'}</td><td><span class="plan-badge ${l.plano}">${l.plano.toUpperCase()}</span></td><td><span class="badge-status ${l.status==='ativo'?'ativo':l.status==='suspenso'?'suspenso':'bloqueado'}">${l.status}</span></td><td>${l.validade||'-'}</td></tr>`).join('')}</tbody></table>
+            </div>`;
+        }
+
+        // ============================================================================
+        // LOJAS (MASTER)
+        // ============================================================================
+        function renderLojas(content, headerActions) {
+            headerActions.innerHTML = '<button class="btn btn-gold btn-sm" onclick="openNovaLoja()">🏢 + Nova Loja</button>';
+            const lojas = getStorage(STORAGE_KEYS.lojas);
+            content.innerHTML = `
+            <div class="table-container">
+              <table><thead><tr><th>Nome</th><th>Responsável</th><th>Plano</th><th>Status</th><th>Validade</th><th>Ações</th></tr></thead>
+              <tbody>${lojas.map(l=>`<tr><td><strong>${l.nome}</strong></td><td>${l.responsavel||'-'}</td><td><span class="plan-badge ${l.plano}">${l.plano.toUpperCase()}</span></td><td><span class="badge-status ${l.status==='ativo'?'ativo':l.status==='suspenso'?'suspenso':'bloqueado'}">${l.status}</span></td><td>${l.validade||'-'}</td>
+              <td>
+                <button class="btn btn-xs btn-secondary" onclick="editarLoja('${l.id}')">✏️</button>
+                <button class="btn btn-xs ${l.status==='bloqueado'?'btn-gold':'btn-danger'}" onclick="toggleBloqueioLoja('${l.id}')">${l.status==='bloqueado'?'🔓':'🔒'}</button>
+                <button class="btn btn-xs btn-secondary" onclick="gerarCodigoTemp('${l.id}')">🔑 Código</button>
+              </td></tr>`).join('')}</tbody></table>
+            </div>`;
+        }
+
+        function openNovaLoja() {
+            const content = `
+            <div class="form-row"><div class="form-group"><label>Nome</label><input class="form-input" id="lojaNome"></div><div class="form-group"><label>Responsável</label><input class="form-input" id="lojaResp"></div></div>
+            <div class="form-row"><div class="form-group"><label>Telefone</label><input class="form-input" id="lojaTel"></div><div class="form-group"><label>Email</label><input class="form-input" id="lojaEmail"></div></div>
+            <div class="form-row"><div class="form-group"><label>Plano</label><select class="form-select" id="lojaPlano"><option value="start">START</option><option value="enterprise">ENTERPRISE</option><option value="black">BLACK</option></select></div><div class="form-group"><label>Validade</label><input class="form-input" type="date" id="lojaValidade"></div></div>
+          `;
+            openModal('Nova Loja', content, () => {
+                const lojas = getStorage(STORAGE_KEYS.lojas);
+                lojas.push({
+                    id: generateId(),
+                    nome: document.getElementById('lojaNome').value,
+                    responsavel: document.getElementById('lojaResp').value,
+                    telefone: document.getElementById('lojaTel').value,
+                    email: document.getElementById('lojaEmail').value,
+                    plano: document.getElementById('lojaPlano').value,
+                    validade: document.getElementById('lojaValidade').value,
+                    status: 'ativo',
+                    criadoEm: new Date().toISOString()
+                });
+                setStorage(STORAGE_KEYS.lojas, lojas);
+                addSystemLog('loja_criada', `Loja criada: ${document.getElementById('lojaNome').value}`);
+                showToast('✅ Loja criada!', 'success');
+                navigateTo('lojas');
+                return true;
+            });
+        }
+
+        function toggleBloqueioLoja(id) {
+            const lojas = getStorage(STORAGE_KEYS.lojas);
+            const loja = lojas.find(l => l.id === id);
+            if (!loja) return;
+            loja.status = loja.status === 'bloqueado' ? 'ativo' : 'bloqueado';
+            setStorage(STORAGE_KEYS.lojas, lojas);
+            addSystemLog('loja_bloqueio', `Loja ${loja.nome} ${loja.status === 'bloqueado' ? 'bloqueada' : 'desbloqueada'}`);
+            showToast(`🔒 Loja ${loja.status === 'bloqueado' ? 'bloqueada' : 'desbloqueada'}!`, loja.status === 'bloqueado' ? 'warning' : 'success');
+            navigateTo('lojas');
+        }
+
+        function gerarCodigoTemp(lojaId) {
+            const duracao = prompt('Duração do código temporário (minutos):', '30');
+            if (!duracao || isNaN(duracao)) return;
+            const code = generateTempCode(lojaId, parseInt(duracao));
+            showToast(`🔑 Código: ${code} (${duracao}min)`, 'info');
+            alert(`Código temporário gerado:\n\n${code}\n\nDuração: ${duracao} minutos\n\nEntregue este código ao cliente.`);
+            navigateTo('temp_codes');
+        }
+
+        function renderTempCodes(content, headerActions) {
+            const codes = getStorage(STORAGE_KEYS.tempCodes);
+            const lojas = getStorage(STORAGE_KEYS.lojas);
+            content.innerHTML = `
+            <div class="table-container">
+              <div class="table-header"><h3>🔑 Códigos Temporários</h3></div>
+              <table><thead><tr><th>Código</th><th>Loja</th><th>Expira</th><th>Usado</th><th>Criado Por</th></tr></thead>
+              <tbody>${codes.slice().reverse().map(c=>`<tr><td><strong>${c.code}</strong></td><td>${lojas.find(l=>l.id===c.lojaId)?.nome||c.lojaId}</td><td>${formatDateTime(c.expiraEm)}</td><td>${c.usado?'✅ Sim':'❌ Não'}</td><td>${c.criadoPor}</td></tr>`).join('') || '<tr><td colspan="5">Nenhum código</td></tr>'}</tbody></table>
+            </div>`;
+        }
+
+        // ============================================================================
+        // USUÁRIOS (MASTER)
+        // ============================================================================
+        function renderUsuarios(content, headerActions) {
+            headerActions.innerHTML = '<button class="btn btn-gold btn-sm" onclick="openNovoUsuario()">👤 + Novo Usuário</button>';
+            const usuarios = getUsuarios();
+            const lojas = getStorage(STORAGE_KEYS.lojas);
+            content.innerHTML = `
+            <div class="table-container">
+              <table><thead><tr><th>Usuário</th><th>Nome</th><th>Plano</th><th>Loja</th><th>Ativo</th><th>Ações</th></tr></thead>
+              <tbody>${usuarios.map(u=>`<tr style="${u.id===MASTER_ID?'background:rgba(212,168,64,0.05);':''}"><td><strong>${u.user}</strong>${u.id===MASTER_ID?' <span class="plan-badge master">MASTER</span>':''}</td><td>${u.name}</td><td><span class="plan-badge ${u.plan}">${u.plan.toUpperCase()}</span></td><td>${lojas.find(l=>l.id===u.lojaId)?.nome||'Todas'}</td><td>${u.active?'✅':'❌'}</td>
+              <td>${u.id!==MASTER_ID?`<button class="btn btn-xs btn-secondary" onclick="editarUsuario('${u.id}')">✏️</button><button class="btn btn-xs btn-danger" onclick="excluirUsuario('${u.id}')">🗑️</button>`:'🔒 Fixo'}</td></tr>`).join('')}</tbody></table>
+            </div>`;
+        }
+
+        function openNovoUsuario() {
+            const lojas = getStorage(STORAGE_KEYS.lojas);
+            const content = `
+            <div class="form-row"><div class="form-group"><label>Usuário</label><input class="form-input" id="usrUser"></div><div class="form-group"><label>Nome</label><input class="form-input" id="usrName"></div></div>
+            <div class="form-row"><div class="form-group"><label>Senha</label><input class="form-input" type="password" id="usrPass"></div><div class="form-group"><label>Plano</label><select class="form-select" id="usrPlan"><option value="start">START</option><option value="enterprise">ENTERPRISE</option><option value="black">BLACK</option></select></div></div>
+            <div class="form-group"><label>Loja</label><select class="form-select" id="usrLoja"><option value="">Nenhuma (verá todas se permitido)</option>${lojas.map(l=>`<option value="${l.id}">${l.nome}</option>`).join('')}</select></div>
+          `;
+            openModal('Novo Usuário', content, () => {
+                const usuarios = getUsuarios();
+                if (usuarios.find(u => u.user === document.getElementById('usrUser').value)) { showToast('Usuário já existe!', 'error'); return false; }
+                usuarios.push({
+                    id: generateId(),
+                    user: document.getElementById('usrUser').value,
+                    pass: document.getElementById('usrPass').value,
+                    name: document.getElementById('usrName').value,
+                    plan: document.getElementById('usrPlan').value,
+                    lojaId: document.getElementById('usrLoja').value || null,
+                    role: 'user',
+                    active: true,
+                    locked: false,
+                    criadoEm: new Date().toISOString()
+                });
+                setStorage(STORAGE_KEYS.usuarios, usuarios);
+                addSystemLog('usuario_criado', `Usuário criado: ${document.getElementById('usrUser').value}`);
+                showToast('✅ Usuário criado!', 'success');
+                navigateTo('usuarios');
+                return true;
+            });
+        }
+
+        function editarUsuario(id) {
+            if (id === MASTER_ID) { showToast('🔒 Usuário MASTER não pode ser editado!', 'error'); return; }
+            const usuarios = getUsuarios();
+            const u = usuarios.find(i => i.id === id);
+            if (!u) return;
+            const lojas = getStorage(STORAGE_KEYS.lojas);
+            const content = `
+            <div class="form-group"><label>Nome</label><input class="form-input" id="usrName" value="${u.name||''}"></div>
+            <div class="form-row"><div class="form-group"><label>Plano</label><select class="form-select" id="usrPlan">${['start','enterprise','black'].map(p=>`<option ${p===u.plan?'selected':''}>${p}</option>`).join('')}</select></div><div class="form-group"><label>Loja</label><select class="form-select" id="usrLoja"><option value="">Nenhuma</option>${lojas.map(l=>`<option value="${l.id}" ${l.id===u.lojaId?'selected':''}>${l.nome}</option>`).join('')}</select></div></div>
+            <div class="form-row"><div class="form-group"><label>Ativo</label><select class="form-select" id="usrActive"><option value="true" ${u.active?'selected':''}>Sim</option><option value="false" ${!u.active?'selected':''}>Não</option></select></div></div>
+          `;
+            openModal('Editar Usuário', content, () => {
+                u.name = document.getElementById('usrName').value;
+                u.plan = document.getElementById('usrPlan').value;
+                u.lojaId = document.getElementById('usrLoja').value || null;
+                u.active = document.getElementById('usrActive').value === 'true';
+                setStorage(STORAGE_KEYS.usuarios, usuarios);
+                navigateTo('usuarios');
+                return true;
+            });
+        }
+
+        function excluirUsuario(id) {
+            if (id === MASTER_ID) { showToast('🔒 Usuário MASTER não pode ser excluído!', 'error'); return; }
+            if (!confirm('Excluir usuário?')) return;
+            let usuarios = getUsuarios();
+            usuarios = usuarios.filter(u => u.id !== id);
+            setStorage(STORAGE_KEYS.usuarios, usuarios);
+            addSystemLog('usuario_excluido', `Usuário excluído: ${id}`);
+            navigateTo('usuarios');
+        }
+
+        // ============================================================================
+        // PRODUÇÃO, FICHAS, BANCAS, ESTOQUE, MATERIAIS, FINANCEIRO
+        // ============================================================================
+        function renderProducao(content, headerActions, lojaId) {
+            headerActions.innerHTML = '<button class="btn btn-gold btn-sm" onclick="openNovaProducao()">🏭 + Nova Ordem</button>';
+            const prod = filterByLoja(getStorage(STORAGE_KEYS.producao), lojaId);
+            content.innerHTML = `
+            <div class="table-container"><table><thead><tr><th>Ordem</th><th>Data</th><th>Modelo</th><th>Qtd</th><th>Etapa</th><th>Status</th><th>Ações</th></tr></thead>
+            <tbody>${prod.slice().reverse().map(p=>`<tr><td>#${p.ordem||p.id.slice(-6)}</td><td>${formatDate(p.data)}</td><td>${p.modelo||'-'}</td><td>${p.quantidade||0}</td><td>${p.etapa||'-'}</td><td><span class="badge-status ${p.status==='finalizado'?'finalizado':'em-producao'}">${p.status||'-'}</span></td><td><button class="btn btn-xs btn-secondary" onclick="editarProducao('${p.id}')">✏️</button></td></tr>`).join('')||'<tr><td colspan="7">Nenhuma ordem</td></tr>'}</tbody></table></div>`;
+        }
+
+        function openNovaProducao() {
+            const lojaId = getLojaFilter();
+            const content = `
+            <div class="form-row"><div class="form-group"><label>Modelo</label><input class="form-input" id="prodModelo"></div><div class="form-group"><label>Quantidade</label><input class="form-input" type="number" id="prodQtd" value="1"></div></div>
+            <div class="form-row"><div class="form-group"><label>Etapa</label><select class="form-select" id="prodEtapa"><option>Corte</option><option>Pesponto</option><option>Montagem</option></select></div><div class="form-group"><label>Status</label><select class="form-select" id="prodStatus"><option>aguardando</option><option>em produção</option><option>finalizado</option></select></div></div>
+          `;
+            openModal('Nova Ordem', content, () => {
+                const prod = getStorage(STORAGE_KEYS.producao);
+                prod.push({
+                    id: generateId(),
+                    lojaId,
+                    ordem: 'ORD-' + Date.now().toString(36).toUpperCase(),
+                    data: new Date().toISOString().slice(0, 10),
+                    modelo: document.getElementById('prodModelo').value,
+                    quantidade: parseInt(document.getElementById('prodQtd').value) || 0,
+                    etapa: document.getElementById('prodEtapa').value,
+                    status: document.getElementById('prodStatus').value,
+                    criadoEm: new Date().toISOString()
+                });
+                setStorage(STORAGE_KEYS.producao, prod);
+                showToast('✅ Ordem criada!', 'success');
+                navigateTo('producao');
+                return true;
+            });
+        }
+
+        function editarProducao(id) {
+            const prod = getStorage(STORAGE_KEYS.producao);
+            const p = prod.find(i => i.id === id);
+            if (!p) return;
+            const content = `
+            <div class="form-group"><label>Status</label><select class="form-select" id="prodStatus">${['aguardando','em produção','finalizado','atrasado'].map(s=>`<option ${s===p.status?'selected':''}>${s}</option>`).join('')}</select></div>
+          `;
+            openModal('Editar', content, () => { p.status = document.getElementById('prodStatus').value;
+                setStorage(STORAGE_KEYS.producao, prod);
+                navigateTo('producao'); return true; });
+        }
+
+        function renderFichas(content, headerActions, lojaId) {
+            headerActions.innerHTML = '<button class="btn btn-gold btn-sm" onclick="openNovaFicha()">📋 + Nova Ficha</button>';
+            const fichas = filterByLoja(getStorage(STORAGE_KEYS.fichas), lojaId);
+            content.innerHTML = `
+            <div class="table-container"><table><thead><tr><th>Código</th><th>Modelo</th><th>Custo</th><th>Ações</th></tr></thead>
+            <tbody>${fichas.map(f=>`<tr><td>${f.codigo||f.id.slice(-6)}</td><td>${f.modelo||'-'}</td><td>${formatCurrency(f.custoEstimado)}</td><td><button class="btn btn-xs btn-secondary" onclick="editarFicha('${f.id}')">✏️</button></td></tr>`).join('')||'<tr><td colspan="4">Nenhuma</td></tr>'}</tbody></table></div>`;
+        }
+
+        function openNovaFicha() {
+            const lojaId = getLojaFilter();
+            const content = `
+            <div class="form-row"><div class="form-group"><label>Código</label><input class="form-input" id="fichaCodigo"></div><div class="form-group"><label>Modelo</label><input class="form-input" id="fichaModelo"></div></div>
+            <div class="form-group"><label>Custo Estimado</label><input class="form-input" type="number" id="fichaCusto" step="0.01"></div>
+          `;
+            openModal('Nova Ficha', content, () => {
+                const fichas = getStorage(STORAGE_KEYS.fichas);
+                fichas.push({ id: generateId(), lojaId, codigo: document.getElementById('fichaCodigo').value,
+                    modelo: document.getElementById('fichaModelo').value, custoEstimado: parseFloat(document
+                        .getElementById('fichaCusto').value) || 0, criadoEm: new Date().toISOString() });
+                setStorage(STORAGE_KEYS.fichas, fichas);
+                navigateTo('fichas');
+                return true;
+            });
+        }
+
+        function editarFicha(id) {
+            const fichas = getStorage(STORAGE_KEYS.fichas);
+            const f = fichas.find(i => i.id === id);
+            if (!f) return;
+            const content = `
+            <div class="form-group"><label>Código</label><input class="form-input" id="fichaCodigo" value="${f.codigo||''}"></div>
+          `;
+            openModal('Editar', content, () => { f.codigo = document.getElementById('fichaCodigo').value;
+                setStorage(STORAGE_KEYS.fichas, fichas);
+                navigateTo('fichas'); return true; });
+        }
+
+        function renderBancas(content, headerActions, lojaId) {
+            headerActions.innerHTML = '<button class="btn btn-gold btn-sm" onclick="openNovaBanca()">👥 + Nova Banca</button>';
+            const bancas = filterByLoja(getStorage(STORAGE_KEYS.bancas), lojaId);
+            content.innerHTML = `
+            <div class="table-container"><table><thead><tr><th>Nome</th><th>Serviço</th><th>Valor/Par</th></tr></thead>
+            <tbody>${bancas.map(b=>`<tr><td>${b.nome||'-'}</td><td>${b.tipoServico||'-'}</td><td>${formatCurrency(b.valorPar)}</td></tr>`).join('')||'<tr><td colspan="3">Nenhuma</td></tr>'}</tbody></table></div>`;
+        }
+
+        function openNovaBanca() {
+            const lojaId = getLojaFilter();
+            const content = `
+            <div class="form-row"><div class="form-group"><label>Nome</label><input class="form-input" id="bancaNome"></div><div class="form-group"><label>Serviço</label><select class="form-select" id="bancaServ"><option>Corte</option><option>Pesponto</option><option>Montagem</option></select></div></div>
+            <div class="form-group"><label>Valor/Par</label><input class="form-input" type="number" id="bancaValor" step="0.01"></div>
+          `;
+            openModal('Nova Banca', content, () => {
+                const bancas = getStorage(STORAGE_KEYS.bancas);
+                bancas.push({ id: generateId(), lojaId, nome: document.getElementById('bancaNome').value,
+                    tipoServico: document.getElementById('bancaServ').value, valorPar: parseFloat(document
+                        .getElementById('bancaValor').value) || 0, criadoEm: new Date().toISOString() });
+                setStorage(STORAGE_KEYS.bancas, bancas);
+                navigateTo('bancas');
+                return true;
+            });
+        }
+
+        function renderEstoque(content, headerActions, lojaId) {
+            headerActions.innerHTML = '<button class="btn btn-gold btn-sm" onclick="openMovEstoque()">📦 + Movimentação</button>';
+            const est = filterByLoja(getStorage(STORAGE_KEYS.estoque), lojaId);
+            content.innerHTML = `
+            <div class="table-container"><table><thead><tr><th>Item</th><th>Qtd</th><th>Valor Un.</th></tr></thead>
+            <tbody>${est.map(e=>`<tr><td>${e.item||'-'}</td><td>${e.quantidade||0}</td><td>${formatCurrency(e.valorUnitario)}</td></tr>`).join('')||'<tr><td colspan="3">Vazio</td></tr>'}</tbody></table></div>`;
+        }
+
+        function openMovEstoque() {
+            const lojaId = getLojaFilter();
+            const content = `
+            <div class="form-group"><label>Item</label><input class="form-input" id="estItem"></div>
+            <div class="form-row"><div class="form-group"><label>Qtd</label><input class="form-input" type="number" id="estQtd" value="1"></div><div class="form-group"><label>Valor Un.</label><input class="form-input" type="number" id="estValor" step="0.01"></div></div>
+          `;
+            openModal('Movimentação', content, () => {
+                const est = getStorage(STORAGE_KEYS.estoque);
+                const item = document.getElementById('estItem').value;
+                const qtd = parseInt(document.getElementById('estQtd').value) || 0;
+                const valor = parseFloat(document.getElementById('estValor').value) || 0;
+                let ex = est.find(e => e.item === item && e.lojaId === lojaId);
+                if (ex) { ex.quantidade += qtd;
+                    ex.valorUnitario = valor || ex.valorUnitario; } else est.push({ id: generateId(), lojaId,
+                    item, quantidade: qtd, valorUnitario: valor, criadoEm: new Date().toISOString() });
+                setStorage(STORAGE_KEYS.estoque, est);
+                navigateTo('estoque');
+                return true;
+            });
+        }
+
+        function renderMateriais(content, headerActions, lojaId) {
+            headerActions.innerHTML = '<button class="btn btn-gold btn-sm" onclick="openNovoMaterial()">🧵 + Material</button>';
+            const mats = filterByLoja(getStorage(STORAGE_KEYS.materiais), lojaId);
+            content.innerHTML = `
+            <div class="table-container"><table><thead><tr><th>Nome</th><th>Tipo</th><th>Consumo/Par</th><th>Custo</th></tr></thead>
+            <tbody>${mats.map(m=>`<tr><td>${m.nome||'-'}</td><td>${m.tipo||'-'}</td><td>${m.consumoPar||0}</td><td>${formatCurrency(m.custoUnitario)}</td></tr>`).join('')||'<tr><td colspan="4">Nenhum</td></tr>'}</tbody></table></div>`;
+        }
+
+        function openNovoMaterial() {
+            const lojaId = getLojaFilter();
+            const content = `
+            <div class="form-row"><div class="form-group"><label>Nome</label><input class="form-input" id="matNome"></div><div class="form-group"><label>Tipo</label><select class="form-select" id="matTipo"><option>Couro</option><option>Sintético</option><option>Solado</option><option>Zíper</option></select></div></div>
+          `;
+            openModal('Novo Material', content, () => {
+                const mats = getStorage(STORAGE_KEYS.materiais);
+                mats.push({ id: generateId(), lojaId, nome: document.getElementById('matNome').value,
+                    tipo: document.getElementById('matTipo').value, criadoEm: new Date().toISOString() });
+                setStorage(STORAGE_KEYS.materiais, mats);
+                navigateTo('materiais');
+                return true;
+            });
+        }
+
+        function renderFinanceiro(content, headerActions, lojaId) {
+            headerActions.innerHTML = '<button class="btn btn-gold btn-sm" onclick="openNovaTransacao()">💰 + Transação</button>';
+            const fin = filterByLoja(getStorage(STORAGE_KEYS.financeiro), lojaId);
+            const rec = fin.filter(f => f.tipo === 'receita').reduce((s, f) => s + (f.valor || 0), 0);
+            const desp = fin.filter(f => f.tipo === 'despesa').reduce((s, f) => s + (f.valor || 0), 0);
+            content.innerHTML = `
+            <div class="stats-grid"><div class="stat-card green"><div class="stat-label">Receitas</div><div class="stat-value">${formatCurrency(rec)}</div></div><div class="stat-card red"><div class="stat-label">Despesas</div><div class="stat-value">${formatCurrency(desp)}</div></div></div>
+            <div class="table-container"><table><thead><tr><th>Data</th><th>Descrição</th><th>Valor</th></tr></thead><tbody>${fin.slice().reverse().map(f=>`<tr><td>${formatDate(f.data)}</td><td>${f.descricao||'-'}</td><td style="color:${f.tipo==='receita'?'var(--green)':'var(--red)'}">${formatCurrency(f.valor)}</td></tr>`).join('')||'<tr><td colspan="3">Nenhuma</td></tr>'}</tbody></table></div>`;
+        }
+
+        function openNovaTransacao() {
+            const lojaId = getLojaFilter();
+            const content = `
+            <div class="form-group"><label>Descrição</label><input class="form-input" id="finDesc"></div>
+            <div class="form-row"><div class="form-group"><label>Tipo</label><select class="form-select" id="finTipo"><option>despesa</option><option>receita</option></select></div><div class="form-group"><label>Valor</label><input class="form-input" type="number" id="finValor" step="0.01"></div></div>
+          `;
+            openModal('Nova Transação', content, () => {
+                const fin = getStorage(STORAGE_KEYS.financeiro);
+                fin.push({ id: generateId(), lojaId, data: new Date().toISOString().slice(0, 10),
+                    descricao: document.getElementById('finDesc').value, tipo: document.getElementById(
+                        'finTipo').value, valor: parseFloat(document.getElementById('finValor').value) || 0,
+                    criadoEm: new Date().toISOString() });
+                setStorage(STORAGE_KEYS.financeiro, fin);
+                navigateTo('financeiro');
+                return true;
+            });
+        }
+
+        function renderRelatorios(content, headerActions, lojaId) {
+            content.innerHTML =
+                `<p style="text-align:center;padding:40px;">📈 Módulo de relatórios com filtro por loja ativo.</p>`;
+        }
+
+        function renderConfiguracoes(content, headerActions) {
+            content.innerHTML = `
+            <div class="stats-grid">
+              <div class="stat-card gold"><div class="stat-label">Versão</div><div class="stat-value">v${SYSTEM_VERSION}</div></div>
+            </div>
+            <button class="btn btn-gold" onclick="triggerBackup()">💾 Fazer Backup</button>
+            <button class="btn btn-danger btn-sm" onclick="resetarSistema()" style="margin-left:8px;">⚠️ Resetar Sistema</button>`;
+        }
+
+        function renderLog(content, headerActions) {
+            const log = getStorage(STORAGE_KEYS.systemLog);
+            content.innerHTML = `
+            <div class="table-container"><div class="table-header"><h3>📝 Logs do Sistema</h3></div>
+            <div style="max-height:500px;overflow-y:auto;">${log.slice().reverse().map(l=>`<div style="padding:8px 14px;border-bottom:1px solid var(--border);font-size:11px;font-family:var(--font-mono);"><strong>${formatDateTime(l.timestamp)}</strong> | ${l.usuario||'Sistema'} | ${l.acao}: ${l.descricao}</div>`).join('')||'<p style="padding:20px;">Nenhum log</p>'}</div></div>`;
+        }
+
+        // ============================================================================
+        // MODAL, TOAST, BACKUP, UTILS
+        // ============================================================================
+        function openModal(title, content, onSave) {
+            const container = document.getElementById('modalContainer');
+            container.innerHTML = `
+            <div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal">
+              <div class="modal-header"><h3>${title}</h3><button class="modal-close" onclick="closeModal()">✕</button></div>
+              <div class="modal-body">${content}</div>
+              <div class="modal-footer"><button class="btn btn-secondary btn-sm" onclick="closeModal()">Cancelar</button>${onSave?'<button class="btn btn-gold btn-sm" onclick="handleModalSave()">Salvar</button>':''}</div>
+            </div></div>`;
+            window._modalOnSave = onSave;
+        }
+
+        function closeModal() { document.getElementById('modalContainer').innerHTML = '';
+            window._modalOnSave = null; }
+
+        function handleModalSave() { if (window._modalOnSave) { const r = window._modalOnSave(); if (r !== false)
+                closeModal(); } }
+
+        function showToast(msg, type = 'info') {
+            const c = document.getElementById('toastContainer');
+            const t = document.createElement('div');
+            t.className = `toast toast-${type}`;
+            t.textContent = msg;
+            c.appendChild(t);
+            setTimeout(() => { t.style.opacity = '0';
+                t.style.transition = 'opacity 0.3s';
+                setTimeout(() => t.remove(), 300); }, 3500);
+        }
+
+        function generateId() { return 'fs_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 8); }
+
+        function formatCurrency(v) { return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
+                .format(v || 0); }
+
+        function formatDate(d) { if (!d) return '-'; return new Date(d).toLocaleDateString('pt-BR'); }
+
+        function formatDateTime(d) { if (!d) return '-'; return new Date(d).toLocaleDateString('pt-BR') + ' ' + new Date(
+                d).toLocaleTimeString('pt-BR'); }
+
+        function addSystemLog(acao, descricao) {
+            const log = getStorage(STORAGE_KEYS.systemLog);
+            log.push({ id: generateId(), acao, descricao, usuario: getCurrentUser()?.user || 'sistema',
+                timestamp: new Date().toISOString(), version: SYSTEM_VERSION });
+            if (log.length > 500) log.splice(0, log.length - 500);
+            setStorage(STORAGE_KEYS.systemLog, log);
+        }
+
+        function triggerBackup() {
+            const backup = { version: SYSTEM_VERSION, sistema: SYSTEM_NAME, timestamp: new Date().toISOString(),
+                data: {} };
+            for (let k in STORAGE_KEYS) backup.data[STORAGE_KEYS[k]] = getStorage(STORAGE_KEYS[k]);
+            const blob = new Blob([JSON.stringify(backup)], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `backup-footsystem-${new Date().toISOString().slice(0,10)}.json`;
+            a.click();
+            addSystemLog('backup', 'Backup manual gerado');
+            showToast('✅ Backup gerado!', 'success');
+        }
+
+        function handleRestore(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            if (!confirm('⚠️ Restaurar backup substituirá todos os dados. Continuar?')) { event.target.value = ''; return; }
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const backup = JSON.parse(e.target.result);
+                    for (let k in backup.data) { if (backup.data.hasOwnProperty(k)) localStorage.setItem(k, JSON
+                            .stringify(backup.data[k])); }
+                    addSystemLog('restore', 'Backup restaurado');
+                    showToast('✅ Restaurado!', 'success');
+                    location.reload();
+                } catch (err) { showToast('❌ Arquivo inválido!', 'error'); }
+            };
+            reader.readAsText(file);
+            event.target.value = '';
+        }
+
+        function resetarSistema() {
+            if (!confirm('⚠️ Apagar TODOS os dados?')) return;
+            for (let k in STORAGE_KEYS) localStorage.removeItem(STORAGE_KEYS[k]);
+            initMasterData();
+            addSystemLog('reset', 'Sistema resetado');
+            location.reload();
+        }
+
+        // ============================================================================
+        // NAVEGAÇÃO PÚBLICA
+        // ============================================================================
+        function showLogin() {
+            document.getElementById('landingPage').style.display = 'none';
+            document.getElementById('loginOverlay').style.display = 'flex';
+            document.getElementById('appContainer').style.display = 'none';
+        }
+
+        function showLanding() {
+            document.getElementById('loginOverlay').style.display = 'none';
+            document.getElementById('landingPage').style.display = 'flex';
+            document.getElementById('appContainer').style.display = 'none';
+        }
+
+        function scrollToPlans() {
+            document.getElementById('plansSection').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // ============================================================================
+        // INIT
+        // ============================================================================
+        function init() {
+            initMasterData();
+            const sessao = getStorage(STORAGE_KEYS.sessoes);
+            if (sessao && sessao.userId) {
+                const usuarios = getUsuarios();
+                const user = usuarios.find(u => u.id === sessao.userId && u.active && !u.locked);
+                if (user) {
+                    document.getElementById('landingPage').style.display = 'none';
+                    document.getElementById('loginOverlay').style.display = 'none';
+                    document.getElementById('appContainer').style.display = 'flex';
+                    updateUI(user);
+                    buildSidebar();
+                    if (!isMaster() && checkBlockedStatus()) return;
+                    navigateTo('dashboard');
+                    return;
+                }
+            }
+            document.getElementById('landingPage').style.display = 'flex';
+        }
+
+        document.addEventListener('DOMContentLoaded', init);
+        console.log(`🏭 ${SYSTEM_NAME} v${SYSTEM_VERSION}`);
+        console.log('🔐 MASTER:', MASTER_USER);
+        console.log('📋 Planos: START | ENTERPRISE | BLACK');
     </script>
 </body>
 </html>
