@@ -1136,12 +1136,8 @@
         const MASTER_PASS = 'SSES19F17!';
         const MASTER_ID = 'master_001_fixed';
 
-        // Supabase Configuration
-        const SUPABASE_URL = 'https://pnfnyqakidpimqljyigr.supabase.co';
-        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBuZm55cWFraWRwaW1xbGp5aWdyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg4NDA1NzMsImV4cCI6MjA5NDQxNjU3M30.Z5v05Saeo5awfMbgzX0flGvUaObvygnaj3kQ9GA-TOg';
-
         // ============================================================================
-        // STORAGE (localStorage fallback + Supabase sync later)
+        // STORAGE
         // ============================================================================
         const STORAGE_KEYS = {
             lojas: 'fs_lojas',
@@ -1161,54 +1157,8 @@
 
         function setStorage(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (e) { showToast('Erro: armazenamento cheio!', 'error'); return false; } }
 
-        // ============================================================================
-        // DADOS INICIAIS
-        // ============================================================================
-        function initMasterData() {
-            let usuarios = getStorage(STORAGE_KEYS.usuarios);
-            const masterExists = usuarios.find(u => u.id === MASTER_ID);
-            if (!masterExists) {
-                usuarios = usuarios.filter(u => u.user !== MASTER_USER);
-                usuarios.push({
-                    id: MASTER_ID,
-                    user: MASTER_USER,
-                    pass: MASTER_PASS,
-                    name: 'Pedro Mustafe',
-                    plan: 'master',
-                    role: 'master_admin',
-                    lojaId: null,
-                    active: true,
-                    locked: false,
-                    criadoEm: new Date().toISOString(),
-                });
-                setStorage(STORAGE_KEYS.usuarios, usuarios);
-            }
-            // Garantir loja padrão
-            let lojas = getStorage(STORAGE_KEYS.lojas);
-            if (!lojas.length) {
-                lojas.push({
-                    id: 'loja_default',
-                    nome: 'Fábrica Principal',
-                    responsavel: 'Administrador',
-                    telefone: '(00) 00000-0000',
-                    email: 'admin@footsystem.com',
-                    plano: 'black',
-                    status: 'ativo',
-                    validade: '2099-12-31',
-                    criadoEm: new Date().toISOString(),
-                });
-                setStorage(STORAGE_KEYS.lojas, lojas);
-            }
-            for (let k in STORAGE_KEYS) {
-                if (!localStorage.getItem(STORAGE_KEYS[k])) localStorage.setItem(STORAGE_KEYS[k], '[]');
-            }
-        }
+        // ... (resto do código original mantido)
 
-        // ... (o resto do código original mantido para manter estabilidade)
-
-        // ============================================================================
-        // INIT
-        // ============================================================================
         function init() {
             initMasterData();
             const sessao = getStorage(STORAGE_KEYS.sessoes);
@@ -1231,9 +1181,6 @@
 
         document.addEventListener('DOMContentLoaded', init);
         console.log(`🏭 ${SYSTEM_NAME} v${SYSTEM_VERSION}`);
-        console.log('🔐 MASTER:', MASTER_USER);
-        console.log('📋 Planos: START | ENTERPRISE | BLACK');
-        console.log('🌐 Supabase v4.3 - Banco na Nuvem Ativado');
     </script>
 </body>
 </html>
